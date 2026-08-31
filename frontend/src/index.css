@@ -1,0 +1,77 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+:root {
+  --ink: #10151F;
+  --paper: #FAF9F6;
+  --bg: #FAF9F6;
+  --signal: #2E5BFF;
+  --signal-dark: #1E3FCC;
+  --accent: #2E5BFF;
+  --accent-hover: #1E3FCC;
+  --accent-ink: #FFFFFF;
+  --mist: #EEF1FA;
+  --slate: #626B7A;
+  --won: #E8A33D;
+  --success: #10B981;
+  --danger: #EF4444;
+  --line: rgba(16, 21, 31, 0.09);
+  --radius: 20px;
+  --radius-sm: 14px;
+  --font-heading: "Space Grotesk", sans-serif;
+  --font-family: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --disabled-bg: rgba(16, 21, 31, 0.04);
+  --disabled-text: rgba(16, 21, 31, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body, html, #root {
+  font-family: var(--font-family);
+  background-color: var(--paper);
+  color: var(--ink);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, .display-font {
+  font-family: var(--font-heading);
+  letter-spacing: -0.02em;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  letter-spacing: -0.02em;
+}
+
+/* Ridgeline Modern Elevation & Surfaces */
+.raised {
+  background: #FFFFFF;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  box-shadow: 0 20px 40px -18px rgba(16, 21, 31, 0.09);
+}
+
+.raised-sm {
+  background: #FFFFFF;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  box-shadow: 0 10px 24px -10px rgba(16, 21, 31, 0.08);
+}
+
+.inset {
+  background: var(--mist);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(16, 21, 31, 0.06);
+  box-shadow: none;
+}

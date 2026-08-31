@@ -1,0 +1,147 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  rep
+  manager
+}
+
+enum LeadStatus {
+  New
+  Contacted
+  Qualified
+  Converted
+  Disqualified
+}
+
+enum LeadSource {
+  Website
+  Referral
+  Cold_Call  @map("Cold Call")
+  Trade_Show @map("Trade Show")
+  Other
+}
+
+enum OpportunityStage {
+  New
+  Contacted
+  Qualified
+  Proposal
+  Negotiation
+  Won
+  Lost
+}
+
+enum ActivityType {
+  call
+  meeting
+  note
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  name         String
+  email        String        @unique
+  passwordHash String        @map("password_hash")
+  role         Role
+  isActive     Boolean       @default(true) @map("is_active")
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  leads         Lead[]
+  opportunities Opportunity[]
+  activities    Activity[]
+
+  @@map("users")
+}
+
+model Lead {
+  id               Int          @id @default(autoincrement())
+  companyName      String       @map("company_name")
+  contactName      String       @map("contact_name")
+  contactEmail     String       @map("contact_email")
+  contactPhone     String?      @map("contact_phone")
+  source           LeadSource
+  status           LeadStatus   @default(New)
+  disqualifyReason String?      @map("disqualify_reason")
+  ownerId          Int          @map("owner_id")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  owner             User      @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  convertedCustomer Customer?
+
+  @@index([ownerId, status])
+  @@map("leads")
+}
+
+model Customer {
+  id                  Int      @id @default(autoincrement())
+  companyName         String   @map("company_name")
+  industry            String?
+  billingAddress      String?  @map("billing_address")
+  convertedFromLeadId Int?     @unique @map("converted_from_lead_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  convertedFromLead Lead?           @relation(fields: [convertedFromLeadId], references: [id], onDelete: Restrict)
+  contacts          ContactPerson[]
+  opportunities     Opportunity[]
+  activities        Activity[]
+
+  @@map("customers")
+}
+
+model ContactPerson {
+  id         Int      @id @default(autoincrement())
+  customerId Int      @map("customer_id")
+  name       String
+  title      String?
+  email      String
+  phone      String?
+  isPrimary  Boolean  @default(false) @map("is_primary")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@map("contact_persons")
+}
+
+model Opportunity {
+  id                Int              @id @default(autoincrement())
+  customerId        Int              @map("customer_id")
+  ownerId           Int              @map("owner_id")
+  stage             OpportunityStage @default(New)
+  dealValue         Float            @map("deal_value")
+  expectedCloseDate DateTime         @map("expected_close_date")
+  lostReason        String?          @map("lost_reason")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  customer   Customer   @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  owner      User       @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  activities Activity[]
+
+  @@index([ownerId, stage])
+  @@map("opportunities")
+}
+
+model Activity {
+  id               Int          @id @default(autoincrement())
+  customerId       Int          @map("customer_id")
+  opportunityId    Int?         @map("opportunity_id")
+  ownerId          Int          @map("owner_id")
+  type             ActivityType
+  notes            String
+  nextFollowUpDate DateTime?    @map("next_follow_up_date")
+  createdAt        DateTime     @default(now()) @map("created_at")
+
+  customer    Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Restrict)
+  owner       User         @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+
+  @@map("activities")
+}

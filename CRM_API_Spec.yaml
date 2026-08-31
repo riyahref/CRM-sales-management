@@ -1,0 +1,659 @@
+openapi: 3.0.3
+info:
+  title: CRM / Sales Management Portal API
+  version: "1.0.0"
+  description: |
+    REST API for the CRM MVP described in `CRM_POC_Design_Document.docx` and `CRM_PRD.md`.
+    This file is the authoritative, machine-readable contract — implement handlers to match
+    it exactly. Where this spec and the prose docs conflict, this spec wins for request/response
+    shape; the PRD wins for business-rule *behavior* (e.g., which transitions are allowed).
+
+    ## Conventions
+    - All request/response bodies are `application/json`.
+    - All endpoints except `/auth/login` require `Authorization: Bearer <token>`.
+    - All list endpoints are paginated with `page` (default 1) and `pageSize` (default 20, max 100)
+      query params, and return the `PaginatedMeta` envelope shown on each list response.
+    - Timestamps are ISO-8601 UTC strings (e.g. `2026-08-29T10:15:00Z`).
+    - Money fields (`dealValue`) are plain non-negative numbers with no currency unit (see PRD A-4).
+    - Every error response uses the shared `Error` schema. `error` is a stable machine code
+      (e.g. `VALIDATION_ERROR`, `FORBIDDEN`, `NOT_FOUND`, `INVALID_STATE`, `INVALID_TRANSITION`);
+      `message` is safe to show to the end user as-is.
+    - A resource that doesn't exist AND a resource that exists but isn't yours both return 404,
+      with the same generic message — never leak existence of another user's record (see PRD §7).
+
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Leads
+  - name: Opportunities
+  - name: Customers
+  - name: Activities
+  - name: Dashboard
+  - name: Users
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate and receive a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 1 }
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user: { $ref: "#/components/schemas/User" }
+              example:
+                token: "eyJhbGciOiJIUzI1NiIs..."
+                user: { id: 12, name: "Priya Shah", email: "priya@acme.test", role: "rep", isActive: true, createdAt: "2026-01-04T09:00:00Z" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401":
+          description: Invalid credentials or inactive account
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                badCreds:
+                  value: { error: "INVALID_CREDENTIALS", message: "Invalid email or password" }
+                inactive:
+                  value: { error: "ACCOUNT_INACTIVE", message: "This account is inactive. Contact your administrator." }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Invalidate the current session (client-side token discard; no server state change)
+      responses:
+        "204": { description: Logged out }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /leads:
+    get:
+      tags: [Leads]
+      summary: List leads (Reps see only their own; Managers see all)
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/LeadStatus" }
+        - name: source
+          in: query
+          schema: { $ref: "#/components/schemas/LeadSource" }
+        - name: q
+          in: query
+          description: Free-text search across companyName and contactName
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedMeta"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Lead" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Leads]
+      summary: Create a lead (Manager only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LeadCreateRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lead" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /leads/{id}:
+    parameters:
+      - $ref: "#/components/parameters/LeadId"
+    get:
+      tags: [Leads]
+      summary: Get a single lead
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lead" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Leads]
+      summary: Edit a lead, including manual status changes (never to 'Converted' — see /convert)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LeadUpdateRequest" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lead" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Attempted to manually set status to Converted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: "INVALID_STATE", message: "Status 'Converted' can only be set via the Convert action." }
+
+  /leads/{id}/convert:
+    parameters:
+      - $ref: "#/components/parameters/LeadId"
+    post:
+      tags: [Leads]
+      summary: Convert an eligible lead into a Customer + primary Contact + new Opportunity
+      description: Eligible only when lead.status is 'Contacted' or 'Qualified'. Atomic — all records are created together or none are.
+      responses:
+        "201":
+          description: Conversion succeeded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConvertLeadResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Lead is not in an eligible status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: "INVALID_STATE", message: "Lead must be Contacted or Qualified before conversion." }
+
+  /opportunities:
+    get:
+      tags: [Opportunities]
+      summary: List opportunities (Reps see only their own by default; Managers may pass mine=false)
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: stage
+          in: query
+          schema: { $ref: "#/components/schemas/OpportunityStage" }
+        - name: mine
+          in: query
+          description: "Manager-only toggle; ignored (always true) for Reps. Default true."
+          schema: { type: boolean, default: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedMeta"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Opportunity" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /opportunities/{id}:
+    parameters:
+      - $ref: "#/components/parameters/OpportunityId"
+    get:
+      tags: [Opportunities]
+      summary: Get a single opportunity
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Opportunity" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /opportunities/{id}/stage:
+    parameters:
+      - $ref: "#/components/parameters/OpportunityId"
+    patch:
+      tags: [Opportunities]
+      summary: Transition an opportunity's pipeline stage
+      description: |
+        Forward-sequential transitions only (New→Contacted→Qualified→Proposal→Negotiation→Won).
+        'Lost' is reachable from any non-terminal stage and requires `lostReason`.
+        'Won' and 'Lost' are terminal — no further transitions are accepted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [toStage]
+              properties:
+                toStage: { $ref: "#/components/schemas/OpportunityStage" }
+                lostReason:
+                  type: string
+                  minLength: 3
+                  description: Required when toStage is 'Lost'
+      responses:
+        "200":
+          description: Stage updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Opportunity" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Invalid transition (skips a stage, moves backward, or the deal is already terminal)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: "INVALID_TRANSITION", message: "Cannot move from 'New' to 'Proposal' directly." }
+
+  /customers/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CustomerId"
+    get:
+      tags: [Customers]
+      summary: Get a customer profile with contacts, opportunities, and activity timeline
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /customers/{id}/contacts:
+    parameters:
+      - $ref: "#/components/parameters/CustomerId"
+    post:
+      tags: [Customers]
+      summary: Add a contact person to a customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContactPersonCreateRequest" }
+      responses:
+        "201":
+          description: Created. If isPrimary was true, any previously-primary contact is un-marked server-side.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactPerson" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /customers/{id}/activities:
+    parameters:
+      - $ref: "#/components/parameters/CustomerId"
+    post:
+      tags: [Activities]
+      summary: Log an activity (call / meeting / note) against a customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivityCreateRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Activity" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /dashboard/summary:
+    get:
+      tags: [Dashboard]
+      summary: Role-scoped dashboard metrics
+      description: Reps receive their own scoped totals with `perRep` omitted. Managers receive team-wide totals plus `perRep`.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DashboardSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List sales reps (Manager only) — used for assignment dropdowns and the Team screen
+      parameters:
+        - name: includeInactive
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    patch:
+      tags: [Users]
+      summary: Activate or deactivate a rep account (Manager only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [isActive]
+              properties:
+                isActive: { type: boolean }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    LeadId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    OpportunityId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    CustomerId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+
+  responses:
+    Unauthorized:
+      description: Missing or expired token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: "UNAUTHORIZED", message: "Your session expired — please log in again." }
+    Forbidden:
+      description: Authenticated but not permitted to act on this resource
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: "FORBIDDEN", message: "You don't have access to this record." }
+    NotFound:
+      description: Resource does not exist, or exists but belongs to another user (identical response by design)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: "NOT_FOUND", message: "This record could not be found." }
+    ValidationError:
+      description: One or more fields failed validation
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error: "VALIDATION_ERROR"
+            message: "One or more fields are invalid."
+            fields:
+              - field: "contactEmail"
+                message: "Enter a valid email address"
+
+  schemas:
+    Role:
+      type: string
+      enum: [rep, manager]
+    LeadStatus:
+      type: string
+      enum: [New, Contacted, Qualified, Converted, Disqualified]
+    LeadSource:
+      type: string
+      enum: [Website, Referral, "Cold Call", "Trade Show", Other]
+    OpportunityStage:
+      type: string
+      enum: [New, Contacted, Qualified, Proposal, Negotiation, Won, Lost]
+    ActivityType:
+      type: string
+      enum: [call, meeting, note]
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: "Stable machine code, e.g. VALIDATION_ERROR" }
+        message: { type: string, description: "Safe to display to the end user" }
+        fields:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+
+    PaginatedMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/Role" }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    Lead:
+      type: object
+      properties:
+        id: { type: integer }
+        companyName: { type: string }
+        contactName: { type: string }
+        contactEmail: { type: string, format: email }
+        contactPhone: { type: string, nullable: true }
+        source: { $ref: "#/components/schemas/LeadSource" }
+        status: { $ref: "#/components/schemas/LeadStatus" }
+        disqualifyReason: { type: string, nullable: true }
+        ownerId: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    LeadCreateRequest:
+      type: object
+      required: [companyName, contactName, contactEmail, source, ownerId]
+      properties:
+        companyName: { type: string, minLength: 1 }
+        contactName: { type: string, minLength: 1 }
+        contactEmail: { type: string, format: email }
+        contactPhone: { type: string }
+        source: { $ref: "#/components/schemas/LeadSource" }
+        ownerId: { type: integer }
+
+    LeadUpdateRequest:
+      type: object
+      description: Partial update. status may be set to any value except 'Converted'; 'Disqualified' requires disqualifyReason.
+      properties:
+        companyName: { type: string }
+        contactName: { type: string }
+        contactEmail: { type: string, format: email }
+        contactPhone: { type: string }
+        source: { $ref: "#/components/schemas/LeadSource" }
+        status: { $ref: "#/components/schemas/LeadStatus" }
+        disqualifyReason: { type: string, minLength: 5 }
+        ownerId: { type: integer, description: "Manager-only: reassign to a different rep" }
+
+    Customer:
+      type: object
+      properties:
+        id: { type: integer }
+        companyName: { type: string }
+        industry: { type: string, nullable: true }
+        billingAddress: { type: string, nullable: true }
+        convertedFromLeadId: { type: integer, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    ContactPerson:
+      type: object
+      properties:
+        id: { type: integer }
+        customerId: { type: integer }
+        name: { type: string }
+        title: { type: string, nullable: true }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        isPrimary: { type: boolean }
+
+    ContactPersonCreateRequest:
+      type: object
+      required: [name, email]
+      properties:
+        name: { type: string, minLength: 1 }
+        title: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        isPrimary: { type: boolean, default: false }
+
+    Opportunity:
+      type: object
+      properties:
+        id: { type: integer }
+        customerId: { type: integer }
+        ownerId: { type: integer }
+        stage: { $ref: "#/components/schemas/OpportunityStage" }
+        dealValue: { type: number, minimum: 0 }
+        expectedCloseDate: { type: string, format: date }
+        lostReason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Activity:
+      type: object
+      properties:
+        id: { type: integer }
+        customerId: { type: integer }
+        opportunityId: { type: integer, nullable: true }
+        ownerId: { type: integer }
+        type: { $ref: "#/components/schemas/ActivityType" }
+        notes: { type: string }
+        nextFollowUpDate: { type: string, format: date, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    ActivityCreateRequest:
+      type: object
+      required: [type, notes]
+      properties:
+        type: { $ref: "#/components/schemas/ActivityType" }
+        notes: { type: string, minLength: 3 }
+        nextFollowUpDate: { type: string, format: date, nullable: true }
+        opportunityId: { type: integer, nullable: true }
+
+    ConvertLeadResponse:
+      type: object
+      properties:
+        lead: { $ref: "#/components/schemas/Lead" }
+        customer: { $ref: "#/components/schemas/Customer" }
+        contactPerson: { $ref: "#/components/schemas/ContactPerson" }
+        opportunity: { $ref: "#/components/schemas/Opportunity" }
+
+    CustomerDetail:
+      allOf:
+        - $ref: "#/components/schemas/Customer"
+        - type: object
+          properties:
+            contacts:
+              type: array
+              items: { $ref: "#/components/schemas/ContactPerson" }
+            opportunities:
+              type: array
+              items: { $ref: "#/components/schemas/Opportunity" }
+            activities:
+              type: array
+              items: { $ref: "#/components/schemas/Activity" }
+              description: Reverse-chronological (newest first)
+
+    DashboardSummary:
+      type: object
+      properties:
+        openLeads: { type: integer }
+        leadsByStatus:
+          type: object
+          additionalProperties: { type: integer }
+        openOpportunities: { type: integer }
+        openPipelineValue: { type: number }
+        followUpsDueToday: { type: integer }
+        wonThisMonth: { type: integer }
+        lostThisMonth: { type: integer }
+        conversionRate:
+          type: number
+          nullable: true
+          description: "Won ÷ (Won + Lost) for the current calendar month; null if Won+Lost is 0"
+        perRep:
+          type: array
+          nullable: true
+          description: Present only in the Manager response
+          items:
+            type: object
+            properties:
+              repId: { type: integer }
+              repName: { type: string }
+              openLeads: { type: integer }
+              openPipelineValue: { type: number }
+              wonThisMonth: { type: integer }
