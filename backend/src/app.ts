@@ -10,17 +10,26 @@ import { errorHandler } from "./middleware/error.middleware";
 
 const app = express();
 
-// CORS configuration for production deployment
-const allowedOrigins = process.env.FRONTEND_URL
+// CORS configuration for production deployment and local development
+const defaultOrigins = [
+  "https://crm-sales-management.vercel.app",
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "http://127.0.0.1:5173"
+];
+
+const customOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(",").map((url) => url.trim().replace(/\/$/, ""))
-  : ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"];
+  : [];
+
+const allowedOrigins = Array.from(new Set([...defaultOrigins, ...customOrigins]));
 
 app.use(
   cors({
     origin: (origin, callback) => {
       // Allow server-to-server or non-browser health checks without origin header
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin) || allowedOrigins.includes("*")) {
+      if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
       return callback(new Error(`CORS policy blocked request from origin: ${origin}`));
