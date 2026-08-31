@@ -24,21 +24,35 @@ const customOrigins = process.env.FRONTEND_URL
 
 const allowedOrigins = Array.from(new Set([...defaultOrigins, ...customOrigins]));
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow server-to-server or non-browser health checks without origin header
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    // Allow server-to-server or non-browser health checks without origin header
+    if (!origin) return callback(null, true);
+
+    const isAllowed = allowedOrigins.some((allowed) => {
+      if (allowed === origin) return true;
+      // Match Vercel deployment preview URLs matching crm-sales-management*.vercel.app
+      if (origin.endsWith(".vercel.app") && origin.includes("crm-sales-management")) {
+        return true;
       }
-      return callback(new Error(`CORS policy blocked request from origin: ${origin}`));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"]
-  })
-);
+      return false;
+    });
+
+    if (isAllowed) {
+      return callback(null, true);
+    }
+
+    // Pass false instead of Error to prevent Express 500 Internal Server Error crash
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+};
+
+// Enable preflight OPTIONS handling for all routes
+app.options("*", cors(corsOptions));
+app.use(cors(corsOptions));
 
 app.use(express.json());
 
